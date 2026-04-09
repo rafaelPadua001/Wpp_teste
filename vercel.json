@@ -1,6 +1,6 @@
 {
   "framework": "vite",
-  "installCommand": "cd frontend && npm install",
+  "installCommand": "cd frontend && npm install --legacy-peer-deps --no-audit --no-fund",
   "buildCommand": "cd frontend && node node_modules/vite/bin/vite.js build",
   "outputDirectory": "frontend/dist"
 }
