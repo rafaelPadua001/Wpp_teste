@@ -2,7 +2,7 @@ import axios from "axios";
 import { authStore } from "@/store/auth";
 
 const api = axios.create({
-  baseURL: "http://127.0.0.1:8000/api",
+  baseURL: "https://wpp-teste.onrender.com",
 });
 
 api.interceptors.request.use((config) => {
