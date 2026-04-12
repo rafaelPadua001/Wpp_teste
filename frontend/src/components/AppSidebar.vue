@@ -3,10 +3,6 @@ import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { authStore } from "@/store/auth";
 
-const props = defineProps({
-  rail: Boolean,
-});
-
 const route = useRoute();
 const router = useRouter();
 
@@ -31,16 +27,10 @@ function logout() {
 </script>
 
 <template>
-  <v-navigation-drawer
-    :rail="props.rail"
-    permanent
-    color="#020617"
-    width="276"
-    class="soft-border"
-  >
+  <div class="drawer-content">
     <div class="pa-4 d-flex align-center ga-3">
       <v-avatar size="44" color="primary" rounded="xl">W</v-avatar>
-      <div v-if="!props.rail">
+      <div>
         <div class="text-subtitle-1 font-weight-bold">WhatsApp SaaS</div>
         <div class="text-caption text-medium-emphasis">
           Tenant {{ authStore.state.user?.tenantId || "-" }}
@@ -89,25 +79,23 @@ function logout() {
       </v-list-group>
     </v-list>
 
-    <template #append>
-      <div class="pa-4">
-        <v-card class="glass-card pa-4">
-          <div class="text-body-2 font-weight-bold">Sessao ativa</div>
-          <div class="text-caption text-medium-emphasis mt-1">
-            {{ authStore.isAdmin() ? "Administrador conectado" : "Operador conectado" }}
-          </div>
-          <v-btn
-            class="mt-4"
-            block
-            variant="tonal"
-            color="primary"
-            prepend-icon="mdi-logout"
-            @click="logout"
-          >
-            Logout
-          </v-btn>
-        </v-card>
-      </div>
-    </template>
-  </v-navigation-drawer>
+    <div class="pa-4 mt-auto">
+      <v-card class="glass-card pa-4">
+        <div class="text-body-2 font-weight-bold">Sessao ativa</div>
+        <div class="text-caption text-medium-emphasis mt-1">
+          {{ authStore.isAdmin() ? "Administrador conectado" : "Operador conectado" }}
+        </div>
+        <v-btn
+          class="mt-4"
+          block
+          variant="tonal"
+          color="primary"
+          prepend-icon="mdi-logout"
+          @click="logout"
+        >
+          Logout
+        </v-btn>
+      </v-card>
+    </div>
+  </div>
 </template>
