@@ -14,6 +14,7 @@ const clearing = ref(false);
 const contacts = ref([]);
 const messages = ref([]);
 const selectedContacts = ref([]);
+const selectAll = ref(false);
 const historyPage = ref(1);
 const historyPerPage = 10;
 const form = reactive({
@@ -40,10 +41,36 @@ watch(activeTab, () => {
   historyPage.value = 1;
 });
 
+watch(selectedContacts, (newValue) => {
+  const total = contacts.value.length;
+  if (!total) {
+    selectAll.value = false;
+    return;
+  }
+  selectAll.value = newValue.length === total;
+});
+
+watch(contacts, (newValue) => {
+  if (!newValue.length) {
+    selectAll.value = false;
+    selectedContacts.value = [];
+  } else if (selectAll.value) {
+    selectedContacts.value = newValue.map((contact) => contact.id);
+  }
+});
+
 function notify(text, color = "success") {
   snackbar.show = true;
   snackbar.text = text;
   snackbar.color = color;
+}
+
+function toggleSelectAll() {
+  if (selectAll.value) {
+    selectedContacts.value = contacts.value.map((contact) => contact.id);
+  } else {
+    selectedContacts.value = [];
+  }
 }
 
 async function loadData() {
@@ -142,6 +169,15 @@ onMounted(loadData);
                 <v-card class="glass-card pa-4 mb-4">
                   <div class="text-subtitle-2 font-weight-bold mb-3">Contatos disponíveis</div>
                   <v-progress-linear v-if="loading" indeterminate color="primary" />
+                  <v-checkbox
+                    v-model="selectAll"
+                    label="Selecionar todos"
+                    :disabled="loading || !contacts.length"
+                    @change="toggleSelectAll"
+                    hide-details
+                    color="primary"
+                    class="mb-2"
+                  />
                   <v-checkbox
                     v-for="contact in contacts"
                     :key="contact.id"

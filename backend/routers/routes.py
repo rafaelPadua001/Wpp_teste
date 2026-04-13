@@ -1,6 +1,7 @@
 import csv
+import re
+from datetime import datetime, timedelta, timezone
 from io import StringIO
-
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,7 @@ from backend.schemas.schemas import (
     UserUpdate,
 )
 from backend.services.auth_service import AuthService
+from backend.services.import_service import read_contacts_spreadsheet
 from backend.services.whatsapp_service import WhatsAppService
 
 router_auth = APIRouter(prefix="/auth", tags=["auth"])
@@ -195,8 +197,64 @@ def delete_contact(
         raise HTTPException(status_code=404, detail="Contact not found")
     if current_user.role != "admin" and contact.owner_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
-    db.delete(contact)
+    contact.is_deleted = True
+    contact.deleted_at = datetime.now(timezone.utc)
     db.commit()
+
+
+@router_contacts.post("/clear", status_code=status.HTTP_200_OK)
+def clear_contacts(
+    db: Session = Depends(get_db),
+    context: TenantContext = Depends(get_current_context),
+    _: User = Depends(get_current_user),
+):
+    now = datetime.now(timezone.utc)
+    updated = (
+        db.query(Contact)
+        .filter(Contact.tenant_id == context.tenant_id, Contact.is_deleted.is_(False))
+        .update({Contact.is_deleted: True, Contact.deleted_at: now}, synchronize_session=False)
+    )
+    db.commit()
+    return {"cleared": updated}
+
+
+@router_contacts.post("/recover", status_code=status.HTTP_200_OK)
+def recover_contacts(
+    db: Session = Depends(get_db),
+    context: TenantContext = Depends(get_current_context),
+    _: User = Depends(get_current_user),
+):
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    _cleanup_expired_contacts(db, context.tenant_id, cutoff)
+    recovered = (
+        db.query(Contact)
+        .filter(
+            Contact.tenant_id == context.tenant_id,
+            Contact.is_deleted.is_(True),
+            Contact.deleted_at.is_not(None),
+            Contact.deleted_at >= cutoff,
+        )
+        .update({Contact.is_deleted: False, Contact.deleted_at: None}, synchronize_session=False)
+    )
+    db.commit()
+    return {"recovered": recovered}
+
+
+def _cleanup_expired_contacts(db: Session, tenant_id: int, cutoff: datetime) -> None:
+    expired = (
+        db.query(Contact)
+        .filter(
+            Contact.tenant_id == tenant_id,
+            Contact.is_deleted.is_(True),
+            Contact.deleted_at.is_not(None),
+            Contact.deleted_at < cutoff,
+        )
+        .all()
+    )
+    for contact in expired:
+        db.delete(contact)
+    if expired:
+        db.commit()
 
 
 @router_contacts.post("/import-csv", response_model=list[ContactResponse])
@@ -227,6 +285,84 @@ def import_contacts_csv(
     for item in created:
         db.refresh(item)
     return created
+
+
+def _normalize_header(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _sanitize_phone(raw_value: str) -> str | None:
+    digits = re.sub(r"\D", "", str(raw_value or ""))
+    if not digits:
+        return None
+    if len(digits) in (10, 11):
+        return f"55{digits}"
+    if digits.startswith("55") and len(digits) in (12, 13):
+        return digits
+    return digits
+
+
+@router_contacts.post("/import")
+def import_contacts_excel(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    context: TenantContext = Depends(get_current_context),
+    current_user: User = Depends(get_current_user),
+):
+    filename = file.filename or ""
+    if not filename.lower().endswith((".xls", ".xlsx")):
+        raise HTTPException(status_code=400, detail="Invalid file format")
+
+    try:
+        df = read_contacts_spreadsheet(file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if df.empty:
+        return {"imported": 0, "skipped": 0, "errors": ["Empty spreadsheet"]}
+
+    repo = ContactRepository(db)
+    existing_phones = {
+        phone
+        for (phone,) in db.query(Contact.phone)
+        .filter(Contact.tenant_id == context.tenant_id, Contact.is_deleted.is_(False))
+        .all()
+    }
+    seen_phones: set[str] = set()
+    created: list[Contact] = []
+    skipped = 0
+    errors: list[str] = []
+
+    for _, row in df.iterrows():
+        name = row.get("name")
+        phone = _sanitize_phone(row.get("phone"))
+        email = row.get("email")
+        notes = row.get("notes")
+
+        if not phone:
+            skipped += 1
+            continue
+
+        if phone in existing_phones or phone in seen_phones:
+            skipped += 1
+            continue
+
+        contact = repo.create(
+            tenant_id=context.tenant_id,
+            owner_user_id=current_user.id,
+            name=name or "Contato importado",
+            phone=phone,
+            email=email,
+            notes=notes,
+        )
+        created.append(contact)
+        seen_phones.add(phone)
+
+    db.commit()
+    for item in created:
+        db.refresh(item)
+
+    return {"imported": len(created), "skipped": skipped, "errors": errors}
 
 
 @router_messages.get("", response_model=list[MessageResponse])
@@ -312,7 +448,10 @@ def dashboard(
 ):
     tenant = TenantRepository(db).get(context.tenant_id)
     user_count = db.query(User).filter(User.tenant_id == context.tenant_id).count()
-    contact_query = db.query(Contact).filter(Contact.tenant_id == context.tenant_id)
+    contact_query = db.query(Contact).filter(
+        Contact.tenant_id == context.tenant_id,
+        Contact.is_deleted.is_(False),
+    )
     message_query = db.query(Message).filter(Message.tenant_id == context.tenant_id)
     if current_user.role != "admin":
         contact_query = contact_query.filter(Contact.owner_user_id == current_user.id)

@@ -5,7 +5,9 @@ import AppSnackbar from "@/components/AppSnackbar.vue";
 import api from "@/services/api";
 
 const loading = ref(true);
-const importLoading = ref(false);
+const loadingImport = ref(false);
+const file = ref(null);
+const confirmClear = ref(false);
 const editingId = ref(null);
 const contacts = ref([]);
 const snackbar = reactive({ show: false, text: "", color: "success" });
@@ -82,23 +84,43 @@ async function removeContact(id) {
   }
 }
 
-async function importCsv(event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  importLoading.value = true;
+async function clearContacts() {
   try {
-    const formData = new FormData();
-    formData.append("file", file);
-    const { data } = await api.post("/contacts/import-csv", formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
-    notify(`${data.length} contatos importados com sucesso.`);
+    await api.post("/contacts/clear");
+    notify("Contatos limpos com sucesso. Voce pode recuperar em ate 48 horas.");
     await loadContacts();
   } catch (error) {
-    notify(error.response?.data?.detail || "Nao foi possivel importar o CSV.", "error");
+    notify(error.response?.data?.detail || "Nao foi possivel limpar os contatos.", "error");
   } finally {
-    importLoading.value = false;
-    event.target.value = "";
+    confirmClear.value = false;
+  }
+}
+
+async function recoverContacts() {
+  try {
+    const { data } = await api.post("/contacts/recover");
+    notify(`Recuperados ${data.recovered || 0} contatos nas ultimas 48 horas.`);
+    await loadContacts();
+  } catch (error) {
+    notify(error.response?.data?.detail || "Nao foi possivel recuperar os contatos.", "error");
+  }
+}
+
+async function uploadFile() {
+  if (!file.value) return;
+  loadingImport.value = true;
+  try {
+    const formData = new FormData();
+    const selectedFile = Array.isArray(file.value) ? file.value[0] : file.value;
+    formData.append("file", selectedFile);
+    const { data } = await api.post("/contacts/import", formData);
+    notify(`Importacao concluida: ${data.imported} importados, ${data.skipped} ignorados.`);
+    file.value = null;
+    await loadContacts();
+  } catch (error) {
+    notify(error.response?.data?.detail || "Nao foi possivel importar a planilha.", "error");
+  } finally {
+    loadingImport.value = false;
   }
 }
 
@@ -108,7 +130,7 @@ onMounted(loadContacts);
 <template>
   <AppLayout
     title="Contatos"
-    subtitle="Gerencie a base do tenant com criação, edição, exclusão e importação CSV."
+    subtitle="Gerencie a base do tenant com criacao, edicao, exclusao e importacao."
   >
     <v-row>
       <v-col cols="12" md="4">
@@ -141,20 +163,52 @@ onMounted(loadContacts);
           <div class="section-heading">
             <div>
               <div class="text-h6 font-weight-bold">Base de contatos</div>
-              <div class="section-subtitle">Importe, edite e organize sua operação.</div>
+              <div class="section-subtitle">Importe, edite e organize sua operacao.</div>
             </div>
             <div class="d-flex ga-3">
-              <v-btn :loading="loading" variant="tonal" color="primary" @click="loadContacts">Atualizar</v-btn>
-              <v-file-input
-                label="Importar CSV"
-                prepend-icon="mdi-upload"
-                density="comfortable"
-                variant="outlined"
-                hide-details
-                :loading="importLoading"
-                @update:model-value="importCsv"
-              />
+              <v-btn :loading="loading" variant="tonal" color="primary" @click="loadContacts">
+                Atualizar
+              </v-btn>
             </div>
+          </div>
+
+          <div class="d-flex flex-wrap align-center ga-3 mb-6">
+            <v-file-input
+              v-model="file"
+              label="Selecionar planilha (.xls, .xlsx)"
+              accept=".xls,.xlsx"
+              prepend-icon="mdi-file-excel"
+              density="comfortable"
+              variant="outlined"
+              :multiple="false"
+              hide-details
+              :loading="loadingImport"
+            />
+            <v-btn
+              color="primary"
+              class="mt-4"
+              :disabled="!file || loadingImport"
+              :loading="loadingImport"
+              @click="uploadFile"
+            >
+              Importar contatos
+            </v-btn>
+            <v-btn
+              color="error"
+              variant="tonal"
+              class="mt-4"
+              @click="confirmClear = true"
+            >
+              Limpar contatos
+            </v-btn>
+            <v-btn
+              color="primary"
+              variant="outlined"
+              class="mt-4"
+              @click="recoverContacts"
+            >
+              Recuperar contatos (48h)
+            </v-btn>
           </div>
 
           <v-skeleton-loader
@@ -169,12 +223,13 @@ onMounted(loadContacts);
                 <th>Nome</th>
                 <th>Telefone</th>
                 <th>E-mail</th>
-                <th>Ações</th>
+                <th>Notas</th>
+                <th>Acoes</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!contacts.length">
-                <td colspan="4" class="text-center py-8 text-medium-emphasis">
+                <td colspan="5" class="text-center py-8 text-medium-emphasis">
                   Nenhum contato cadastrado ainda.
                 </td>
               </tr>
@@ -182,6 +237,7 @@ onMounted(loadContacts);
                 <td>{{ contact.name }}</td>
                 <td>{{ contact.phone }}</td>
                 <td>{{ contact.email || "-" }}</td>
+                <td>{{ contact.notes || "-" }}</td>
                 <td>
                   <div class="d-flex ga-2">
                     <v-btn size="small" variant="tonal" color="primary" @click="editContact(contact)">
@@ -198,6 +254,20 @@ onMounted(loadContacts);
         </v-card>
       </v-col>
     </v-row>
+
+    <v-dialog v-model="confirmClear" max-width="420">
+      <v-card class="glass-card">
+        <v-card-title class="text-h6 font-weight-bold">Limpar contatos?</v-card-title>
+        <v-card-text>
+          Voce podera recuperar os contatos em ate 48 horas.
+        </v-card-text>
+        <v-card-actions class="pa-4 pt-0">
+          <v-spacer />
+          <v-btn variant="text" color="secondary" @click="confirmClear = false">Cancelar</v-btn>
+          <v-btn color="error" variant="tonal" @click="clearContacts">Confirmar</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <AppSnackbar v-model="snackbar.show" :text="snackbar.text" :color="snackbar.color" />
   </AppLayout>

@@ -51,13 +51,24 @@ class ContactRepository:
         self.db = db
 
     def list(self, tenant_id: int, owner_user_id: int | None = None) -> Sequence[Contact]:
-        query = self.db.query(Contact).filter(Contact.tenant_id == tenant_id)
+        query = self.db.query(Contact).filter(
+            Contact.tenant_id == tenant_id,
+            Contact.is_deleted.is_(False),
+        )
         if owner_user_id is not None:
             query = query.filter(Contact.owner_user_id == owner_user_id)
         return query.order_by(Contact.id.desc()).all()
 
     def get(self, tenant_id: int, contact_id: int) -> Contact | None:
-        return self.db.query(Contact).filter(Contact.tenant_id == tenant_id, Contact.id == contact_id).first()
+        return (
+            self.db.query(Contact)
+            .filter(
+                Contact.tenant_id == tenant_id,
+                Contact.id == contact_id,
+                Contact.is_deleted.is_(False),
+            )
+            .first()
+        )
 
     def create(self, **kwargs) -> Contact:
         contact = Contact(**kwargs)
