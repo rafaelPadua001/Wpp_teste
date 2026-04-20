@@ -26,8 +26,9 @@ watch(mdAndUp, (isDesktop) => {
         :permanent="mdAndUp"
       />
 
-      <v-main class="app-main">
-        <AppHeader :title="title" :subtitle="subtitle" @toggle-sidebar="drawer = !drawer" />
+      <AppHeader :title="title" :subtitle="subtitle" @toggle-sidebar="drawer = !drawer" />
+
+      <v-main class="app-main pt-16">
         <v-container fluid class="pa-4 pa-md-6">
           <div class="content-wrap">
             <slot />

@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import AppLayout from "@/layouts/AppLayout.vue";
 import AppSnackbar from "@/components/AppSnackbar.vue";
 import api from "@/services/api";
@@ -10,12 +10,46 @@ const file = ref(null);
 const confirmClear = ref(false);
 const editingId = ref(null);
 const contacts = ref([]);
+const selectedIds = ref([]);
 const snackbar = reactive({ show: false, text: "", color: "success" });
+const contactHeaders = [
+  { title: "Nome", key: "name" },
+  { title: "Telefone", key: "phone" },
+  { title: "E-mail", key: "email" },
+  { title: "Notas", key: "notes" },
+  { title: "Acoes", key: "actions", sortable: false },
+];
 const form = reactive({
   name: "",
   phone: "",
   email: "",
   notes: "",
+});
+
+function getContactId(contact, index) {
+  return String(contact.id ?? contact._id ?? contact.uuid ?? `tmp-${index}`);
+}
+
+const normalizedContacts = computed(() =>
+  contacts.value.map((contact, index) => ({
+    id: getContactId(contact, index),
+    name: contact.name ?? "",
+    phone: contact.phone ?? "",
+    email: contact.email ?? "",
+    notes: contact.notes ?? "",
+  })),
+);
+
+watch(contacts, () => {
+  const validIds = new Set(normalizedContacts.value.map((contact) => contact.id));
+  selectedIds.value = selectedIds.value.filter((id) => validIds.has(String(id))).map((id) => String(id));
+});
+
+watch(selectedIds, (value) => {
+  const normalized = [...new Set((value || []).map((id) => String(id)).filter(Boolean))];
+  if (normalized.length !== value.length || normalized.some((id, index) => id !== value[index])) {
+    selectedIds.value = normalized;
+  }
 });
 
 function notify(text, color = "success") {
@@ -84,10 +118,21 @@ async function removeContact(id) {
   }
 }
 
-async function clearContacts() {
+async function handleDeleteSelected() {
+  if (!selectedIds.value.length) return;
+
+  const ids = selectedIds.value
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0);
+
+  if (!ids.length) return;
+
   try {
-    await api.post("/contacts/clear");
-    notify("Contatos limpos com sucesso. Voce pode recuperar em ate 48 horas.");
+    const { data } = await api.post("/contacts/clear", {
+      contact_ids: ids,
+    });
+    notify(`Contatos removidos: ${data.cleared || 0}. Voce pode recuperar em ate 48 horas.`);
+    selectedIds.value = [];
     await loadContacts();
   } catch (error) {
     notify(error.response?.data?.detail || "Nao foi possivel limpar os contatos.", "error");
@@ -108,17 +153,18 @@ async function recoverContacts() {
 
 async function uploadFile() {
   if (!file.value) return;
+
   loadingImport.value = true;
   try {
     const formData = new FormData();
     const selectedFile = Array.isArray(file.value) ? file.value[0] : file.value;
-    formData.append("file", selectedFile);
+    formData.append("file", selectedFile, selectedFile.name);
     const { data } = await api.post("/contacts/import", formData);
     notify(`Importacao concluida: ${data.imported} importados, ${data.skipped} ignorados.`);
     file.value = null;
     await loadContacts();
   } catch (error) {
-    notify(error.response?.data?.detail || "Nao foi possivel importar a planilha.", "error");
+    notify(error.response?.data?.detail || "Nao foi possivel importar o arquivo.", "error");
   } finally {
     loadingImport.value = false;
   }
@@ -175,9 +221,9 @@ onMounted(loadContacts);
           <div class="d-flex flex-wrap align-center ga-3 mb-6">
             <v-file-input
               v-model="file"
-              label="Selecionar planilha (.xls, .xlsx)"
-              accept=".xls,.xlsx"
-              prepend-icon="mdi-file-excel"
+              label="Selecionar arquivo (.xml, .xls, .xlsx, .vcf)"
+              accept=".xml,.xls,.xlsx,.vcf"
+              prepend-icon="mdi-file-upload"
               density="comfortable"
               variant="outlined"
               :multiple="false"
@@ -197,6 +243,7 @@ onMounted(loadContacts);
               color="error"
               variant="tonal"
               class="mt-4"
+              :disabled="!selectedIds.length"
               @click="confirmClear = true"
             >
               Limpar contatos
@@ -217,40 +264,41 @@ onMounted(loadContacts);
             color="surface"
           />
 
-          <v-table v-else class="soft-border rounded-xl overflow-hidden">
-            <thead>
-              <tr>
-                <th>Nome</th>
-                <th>Telefone</th>
-                <th>E-mail</th>
-                <th>Notas</th>
-                <th>Acoes</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="!contacts.length">
-                <td colspan="5" class="text-center py-8 text-medium-emphasis">
-                  Nenhum contato cadastrado ainda.
-                </td>
-              </tr>
-              <tr v-for="contact in contacts" :key="contact.id">
-                <td>{{ contact.name }}</td>
-                <td>{{ contact.phone }}</td>
-                <td>{{ contact.email || "-" }}</td>
-                <td>{{ contact.notes || "-" }}</td>
-                <td>
-                  <div class="d-flex ga-2">
-                    <v-btn size="small" variant="tonal" color="primary" @click="editContact(contact)">
-                      Editar
-                    </v-btn>
-                    <v-btn size="small" variant="tonal" color="error" @click="removeContact(contact.id)">
-                      Remover
-                    </v-btn>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </v-table>
+          <v-data-table
+            v-else
+            v-model="selectedIds"
+            :headers="contactHeaders"
+            :items="normalizedContacts"
+            item-value="id"
+            show-select
+            class="soft-border rounded-xl overflow-hidden"
+            density="comfortable"
+            hide-default-footer
+            no-data-text="Nenhum contato cadastrado ainda."
+          >
+            <template #item.name="{ item }">
+              {{ item.name || "-" }}
+            </template>
+            <template #item.phone="{ item }">
+              {{ item.phone || "-" }}
+            </template>
+            <template #item.email="{ item }">
+              {{ item.email || "-" }}
+            </template>
+            <template #item.notes="{ item }">
+              {{ item.notes || "-" }}
+            </template>
+            <template #item.actions="{ item }">
+              <div class="d-flex ga-2">
+                <v-btn size="small" variant="tonal" color="primary" @click="editContact(item)">
+                  Editar
+                </v-btn>
+                <v-btn size="small" variant="tonal" color="error" @click="removeContact(item.id)">
+                  Remover
+                </v-btn>
+              </div>
+            </template>
+          </v-data-table>
         </v-card>
       </v-col>
     </v-row>
@@ -259,12 +307,14 @@ onMounted(loadContacts);
       <v-card class="glass-card">
         <v-card-title class="text-h6 font-weight-bold">Limpar contatos?</v-card-title>
         <v-card-text>
-          Voce podera recuperar os contatos em ate 48 horas.
+          Voce removera {{ selectedIds.length }} contato(s). Voce podera recuperar em ate 48 horas.
         </v-card-text>
         <v-card-actions class="pa-4 pt-0">
           <v-spacer />
           <v-btn variant="text" color="secondary" @click="confirmClear = false">Cancelar</v-btn>
-          <v-btn color="error" variant="tonal" @click="clearContacts">Confirmar</v-btn>
+          <v-btn color="error" variant="tonal" :disabled="!selectedIds.length" @click="handleDeleteSelected">
+            Confirmar
+          </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>

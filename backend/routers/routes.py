@@ -16,6 +16,7 @@ from backend.repositories.repositories import ContactRepository, MessageReposito
 from backend.schemas.schemas import (
     BulkMessageRequest,
     ContactCreate,
+    ContactClearRequest,
     ContactResponse,
     ContactUpdate,
     DashboardResponse,
@@ -28,7 +29,7 @@ from backend.schemas.schemas import (
     UserUpdate,
 )
 from backend.services.auth_service import AuthService
-from backend.services.import_service import read_contacts_spreadsheet
+from backend.services.import_service import decode_upload_content, normalize_email, parse_spreadsheet_content, parse_vcf, parse_xml
 from backend.services.whatsapp_service import WhatsAppService
 
 router_auth = APIRouter(prefix="/auth", tags=["auth"])
@@ -76,7 +77,7 @@ def create_user(
         tenant_id=context.tenant_id,
         created_by=current_user.id,
         name=payload.name,
-        email=payload.email,
+        email=normalize_email(payload.email),
         password_hash=hash_password(payload.password),
         role="user",
         whatsapp=payload.whatsapp,
@@ -136,7 +137,10 @@ def list_contacts(
     current_user: User = Depends(get_current_user),
 ):
     owner_filter = None if current_user.role == "admin" else current_user.id
-    return ContactRepository(db).list(context.tenant_id, owner_filter)
+    contacts = ContactRepository(db).list(context.tenant_id, owner_filter)
+    for contact in contacts:
+        contact.email = normalize_email(contact.email)
+    return contacts
 
 
 @router_contacts.post("", response_model=ContactResponse, status_code=status.HTTP_201_CREATED)
@@ -178,6 +182,8 @@ def update_contact(
     if current_user.role != "admin" and contact.owner_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "email":
+            value = normalize_email(value)
         setattr(contact, field, value)
     db.commit()
     db.refresh(contact)
@@ -204,18 +210,38 @@ def delete_contact(
 
 @router_contacts.post("/clear", status_code=status.HTTP_200_OK)
 def clear_contacts(
+    payload: ContactClearRequest = ContactClearRequest(),
     db: Session = Depends(get_db),
     context: TenantContext = Depends(get_current_context),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
+    contact_ids = list(dict.fromkeys(payload.contact_ids or []))
+    if not contact_ids:
+        return {"cleared": 0}
+
     now = datetime.now(timezone.utc)
-    updated = (
-        db.query(Contact)
-        .filter(Contact.tenant_id == context.tenant_id, Contact.is_deleted.is_(False))
-        .update({Contact.is_deleted: True, Contact.deleted_at: now}, synchronize_session=False)
-    )
+    repo = ContactRepository(db)
+    cleared = 0
+
+    print("CLEAR contact_ids:", contact_ids)
+    print("CLEAR tenant_id:", context.tenant_id)
+    print("CLEAR user_id:", current_user.id)
+    print("CLEAR role:", current_user.role)
+
+    for contact_id in contact_ids:
+        contact = repo.get(context.tenant_id, contact_id)
+        if not contact:
+            continue
+        if current_user.role != "admin" and contact.owner_user_id != current_user.id:
+            continue
+
+        print("CLEAR matched contact:", contact.id)
+        contact.is_deleted = True
+        contact.deleted_at = now
+        cleared += 1
+
     db.commit()
-    return {"cleared": updated}
+    return {"cleared": cleared}
 
 
 @router_contacts.post("/recover", status_code=status.HTTP_200_OK)
@@ -277,7 +303,7 @@ def import_contacts_csv(
                 owner_user_id=current_user.id,
                 name=row["name"],
                 phone=row["phone"],
-                email=row.get("email"),
+                email=normalize_email(row.get("email")),
                 notes=row.get("notes"),
             )
         )
@@ -292,58 +318,49 @@ def _normalize_header(value: str) -> str:
 
 
 def _sanitize_phone(raw_value: str) -> str | None:
-    digits = re.sub(r"\D", "", str(raw_value or ""))
-    if not digits:
+    value = str(raw_value or "").strip()
+    if not value:
         return None
-    if len(digits) in (10, 11):
-        return f"55{digits}"
-    if digits.startswith("55") and len(digits) in (12, 13):
-        return digits
-    return digits
+    digits = re.sub(r"\D", "", value)
+    return digits or None
 
 
-@router_contacts.post("/import")
-def import_contacts_excel(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    context: TenantContext = Depends(get_current_context),
-    current_user: User = Depends(get_current_user),
+def _phone_dedup_key(raw_value: str | None) -> str | None:
+    digits = re.sub(r"\D", "", str(raw_value or ""))
+    return digits or None
+
+
+def _import_contacts_rows(
+    db: Session,
+    context: TenantContext,
+    current_user: User,
+    rows,
 ):
-    filename = file.filename or ""
-    if not filename.lower().endswith((".xls", ".xlsx")):
-        raise HTTPException(status_code=400, detail="Invalid file format")
-
-    try:
-        df = read_contacts_spreadsheet(file)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    if df.empty:
-        return {"imported": 0, "skipped": 0, "errors": ["Empty spreadsheet"]}
-
     repo = ContactRepository(db)
     existing_phones = {
-        phone
+        key
         for (phone,) in db.query(Contact.phone)
         .filter(Contact.tenant_id == context.tenant_id, Contact.is_deleted.is_(False))
         .all()
+        if (key := _phone_dedup_key(phone))
     }
     seen_phones: set[str] = set()
     created: list[Contact] = []
     skipped = 0
     errors: list[str] = []
 
-    for _, row in df.iterrows():
+    for row in rows:
         name = row.get("name")
         phone = _sanitize_phone(row.get("phone"))
-        email = row.get("email")
+        email = normalize_email(row.get("email"))
         notes = row.get("notes")
+        phone_key = _phone_dedup_key(phone)
 
-        if not phone:
+        if not phone or not phone_key:
             skipped += 1
             continue
 
-        if phone in existing_phones or phone in seen_phones:
+        if phone_key in existing_phones or phone_key in seen_phones:
             skipped += 1
             continue
 
@@ -363,6 +380,55 @@ def import_contacts_excel(
         db.refresh(item)
 
     return {"imported": len(created), "skipped": skipped, "errors": errors}
+
+
+@router_contacts.post("/import")
+async def import_contacts(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    context: TenantContext = Depends(get_current_context),
+    current_user: User = Depends(get_current_user),
+):
+    filename = (file.filename or "").strip().lower()
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    text = content.decode("utf-8", errors="ignore")
+
+    if "BEGIN:VCARD" in text.upper():
+        try:
+            rows = parse_vcf(text)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not rows:
+            return {"imported": 0, "skipped": 0, "errors": ["Empty vCard file"]}
+        return _import_contacts_rows(db, context, current_user, rows)
+
+    if "xml" in filename:
+        try:
+            text = decode_upload_content(content)
+            rows = parse_xml(text)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not rows:
+            return {"imported": 0, "skipped": 0, "errors": ["Empty XML file"]}
+        print(f"Importando {len(rows)} contatos")
+        return _import_contacts_rows(db, context, current_user, rows)
+
+    if "xls" in filename:
+        try:
+            df = parse_spreadsheet_content(content)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        if df.empty:
+            return {"imported": 0, "skipped": 0, "errors": ["Empty spreadsheet"]}
+
+        return _import_contacts_rows(db, context, current_user, df.to_dict(orient="records"))
+
+    raise HTTPException(status_code=400, detail="Invalid file format")
 
 
 @router_messages.get("", response_model=list[MessageResponse])

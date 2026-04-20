@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from backend.services.import_service import normalize_email
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class TokenResponse(BaseModel):
@@ -59,8 +61,13 @@ class UserResponse(UserBase):
 class ContactBase(BaseModel):
     name: str
     phone: str
-    email: EmailStr | None = None
+    email: str | None = None
     notes: str | None = None
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def validate_email(cls, value):
+        return normalize_email(value)
 
 
 class ContactCreate(ContactBase):
@@ -70,8 +77,13 @@ class ContactCreate(ContactBase):
 class ContactUpdate(BaseModel):
     name: str | None = None
     phone: str | None = None
-    email: EmailStr | None = None
+    email: str | None = None
     notes: str | None = None
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def validate_email(cls, value):
+        return normalize_email(value)
 
 
 class ContactResponse(ContactBase):
@@ -80,6 +92,10 @@ class ContactResponse(ContactBase):
     tenant_id: int
     owner_user_id: int
     created_at: datetime
+
+
+class ContactClearRequest(BaseModel):
+    contact_ids: list[int] = Field(default_factory=list)
 
 
 class BulkMessageRequest(BaseModel):

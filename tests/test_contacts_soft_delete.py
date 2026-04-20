@@ -18,12 +18,13 @@ def test_clear_and_recover_contacts(client):
     _, tokens = register_and_login(client, "Tenant Clear", "clear@demo.com")
     token = tokens["access_token"]
 
-    create_contact(client, token, name="Contato 1", phone="5511990000001")
+    contact_1 = create_contact(client, token, name="Contato 1", phone="5511990000001")
     create_contact(client, token, name="Contato 2", phone="5511990000002")
 
     clear_response = client.post(
         "/api/contacts/clear",
         headers={"Authorization": f"Bearer {token}"},
+        json={"contact_ids": [contact_1["id"]]},
     )
     assert clear_response.status_code == 200
 
@@ -32,7 +33,7 @@ def test_clear_and_recover_contacts(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert list_response.status_code == 200
-    assert list_response.json() == []
+    assert len(list_response.json()) == 1
 
     recover_response = client.post(
         "/api/contacts/recover",
@@ -46,6 +47,27 @@ def test_clear_and_recover_contacts(client):
     )
     assert recovered_list.status_code == 200
     assert len(recovered_list.json()) == 2
+
+
+def test_clear_contacts_no_ids_is_noop(client):
+    _, tokens = register_and_login(client, "Tenant Clear Noop", "clear-noop@demo.com")
+    token = tokens["access_token"]
+
+    create_contact(client, token, name="Contato 1", phone="5511990000101")
+
+    clear_response = client.post(
+        "/api/contacts/clear",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"contact_ids": []},
+    )
+    assert clear_response.status_code == 200
+
+    list_response = client.get(
+        "/api/contacts",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert list_response.status_code == 200
+    assert len(list_response.json()) == 1
 
 
 def test_recover_skips_expired_contacts(client, db_session):

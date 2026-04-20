@@ -12,7 +12,7 @@ const { smAndDown } = useDisplay();
 </script>
 
 <template>
-  <v-app-bar flat color="transparent" class="px-3 px-md-6 py-2">
+  <v-app-bar app fixed elevation="1" color="surface" class="px-3 px-md-6 py-2 app-header">
     <v-app-bar-nav-icon
       v-if="smAndDown"
       variant="text"
